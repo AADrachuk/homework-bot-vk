@@ -129,7 +129,6 @@ def parse_status(homework):
 
 def main():
     """Основная логика работы бота."""
-
     if not check_tokens():
         sys.exit(1)
 
