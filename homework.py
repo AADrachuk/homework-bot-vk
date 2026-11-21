@@ -28,11 +28,11 @@ HOMEWORK_VERDICTS = {
 
 # указываем настройки логгера для текущего файла
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 # указываем обработчик логов
 handler = RotatingFileHandler('homework.log', maxBytes=50000000, backupCount=5)
-handler.setLevel(logging.INFO)
+handler.setLevel(logging.DEBUG)
 formatter = logging.Formatter(
     '%(asctime)s, '
     '%(levelname)s, '
