@@ -1,12 +1,16 @@
+# Стандартный python
 import os
-import time
-import sys
+import http
 import random
-import requests  # type: ignore
 import logging
-import vk_api  # type: ignore
+import sys
+import time
 from logging.handlers import RotatingFileHandler
 
+# Сторонние, устанавливаемые
+import requests  # type: ignore
+import vk_api  # type: ignore
+from vk_api.exceptions import ApiError  # type: ignore
 from dotenv import load_dotenv  # type: ignore
 
 load_dotenv()
@@ -30,34 +34,62 @@ HOMEWORK_VERDICTS = {
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-# указываем обработчик логов
-handler = RotatingFileHandler('homework.log', maxBytes=50000000, backupCount=5)
-handler.setLevel(logging.DEBUG)
-formatter = logging.Formatter(
-    '%(asctime)s, '
-    '%(levelname)s, '
-    '%(message)s, '
-    '%(name)s'
-)
-handler.setFormatter(formatter)
-
 if not logger.handlers:
-    logger.addHandler(handler)
+    # Обработчик для вывода логов в стандартный поток
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setLevel(logging.DEBUG)
+
+    # Обработчик для записи в файл
+    file_handler = RotatingFileHandler(
+        'homework.log', maxBytes=50000000, backupCount=5)
+    file_handler.setLevel(logging.DEBUG)
+
+    # Форматирование логов
+    formatter = logging.Formatter(
+        '%(asctime)s, '
+        '%(levelname)s, '
+        '%(message)s, '
+        '%(name)s'
+    )
+
+    stream_handler.setFormatter(formatter)
+    file_handler.setFormatter(formatter)
+
+    logger.addHandler(stream_handler)
+    logger.addHandler(file_handler)
+    logger.propagate = False
+
+
+class MissingTokensError(Exception):
+    """Отсутствуют обязательные переменные окружения."""
+
+
+class ApiAnswerError(Exception):
+    """Исключение при некорректном ответе API."""
 
 
 def check_tokens():
     """Проверяет доступность переменных окружения."""
-    if not PRACTICUM_TOKEN:
-        logger.critical('Отсутствует переменная окружения PRACTICUM_TOKEN')
-    if not VK_TOKEN:
-        logger.critical('Отсутствует переменная окружения VK_TOKEN')
-    if not VK_USER_ID:
-        logger.critical('Отсутствует переменная окружения VK_USER_ID')
-    return all([PRACTICUM_TOKEN, VK_TOKEN, VK_USER_ID])
+    tokens = {
+        'PRACTICUM_TOKEN': PRACTICUM_TOKEN,
+        'VK_TOKEN': VK_TOKEN,
+        'VK_USER_ID': VK_USER_ID,
+    }
+    missing_tokens = []
+    for token_name, token_value in tokens.items():
+        if not token_value:
+            logger.critical(f'Отсутствует переменная окружения {token_name}')
+            missing_tokens.append(token_name)
+    if missing_tokens:
+        raise MissingTokensError(
+            f'Отсутствуют переменные окружения: {", ".join(missing_tokens)}'
+        )
+    logger.info('Все переменные окружения на месте')
 
 
 def send_message(vk, message):
     """Отправляет сообщение пользователю в VK."""
+    logger.debug('Начинаем отправку сообщения: %s', message)
     try:
         vk.messages.send(
             user_id=VK_USER_ID,
@@ -65,21 +97,35 @@ def send_message(vk, message):
             random_id=random.randint(0, 2**31 - 1),
         )
         logger.debug('Сообщение отправлено: %s', message)
-    except Exception as error:
+        return True
+    except (ApiError, requests.RequestException) as error:
         logger.exception('Ошибка при отправке сообщения: %s', error)
-        raise
+        return False
 
 
 def get_api_answer(timestamp):
     """Делает запрос к API Практикума и возвращает ответ в виде словаря."""
     payload = {'from_date': timestamp}
+    request_data = {
+        'url': ENDPOINT,
+        'headers': HEADERS,
+        'params': payload,
+    }
+
+    logger.debug(
+        'Начинаем запрос к API: адрес %(url)s,'
+        'заголовки %(headers)s,'
+        'параметры %(params)s',
+        request_data,
+    )
+
     try:
-        response = requests.get(ENDPOINT, headers=HEADERS, params=payload)
+        response = requests.get(**request_data)
     except requests.exceptions.RequestException as error:
         raise ConnectionError(f'Не удалось подключиться к API: {error}')
 
-    if response.status_code != 200:
-        raise RuntimeError(
+    if response.status_code != http.HTTPStatus.OK:
+        raise ApiAnswerError(
             f'API вернул некорректный статус-код: {response.status_code}. '
             f'Ответ: {response.text}'
         )
@@ -87,30 +133,36 @@ def get_api_answer(timestamp):
     try:
         return response.json()
     except ValueError:
-        raise RuntimeError('Ответ API не удалось привести к формату JSON')
+        raise ApiAnswerError('Ответ API не удалось привести к формату JSON')
 
 
 def check_response(response):
     """Проверяет ответ API и возвращает список домашних работ."""
     if not isinstance(response, dict):
-        raise TypeError('Ответ API должен быть словарем')
+        raise TypeError(
+            f'Ответ API вместо словаря дает тип: {type(response).__name__}')
 
     if 'homeworks' not in response:
         raise KeyError('В ответе API отсутствует ключ "homeworks"')
 
-    homeworks = response['homeworks']
-    if not isinstance(homeworks, list):
-        raise TypeError('Ключ "homeworks" должен быть списком')
+    hmwrks = response['homeworks']
+    if not isinstance(hmwrks, list):
+        raise TypeError(
+            f'Ключ "hmwrks" вместо списка дает тип: {type(hmwrks).__name__}')
 
     logger.debug(
         'Ответ API успешно проверен. Получено работ: %d',
-        len(homeworks)
+        len(hmwrks)
     )
-    return homeworks
+    return hmwrks
 
 
 def parse_status(homework):
     """Извлекает статус работы и возвращает текст сообщения."""
+    if not isinstance(homework, dict):
+        raise TypeError(
+            f'Ожидался словарь, получен тип {type(homework).__name__}')
+
     if 'homework_name' not in homework:
         raise KeyError('В ответе API нет ключа "homework_name"')
 
@@ -129,8 +181,7 @@ def parse_status(homework):
 
 def main():
     """Основная логика работы бота."""
-    if not check_tokens():
-        sys.exit(1)
+    check_tokens()
 
     # Создаем сессию для бота
     vk_session = vk_api.VkApi(token=VK_TOKEN)
@@ -143,16 +194,27 @@ def main():
             response = get_api_answer(timestamp)
             # проверка ответа
             homeworks = check_response(response)
-
-            timestamp = response.get('current_date', timestamp)
+            # дополнительный флаг доставки всех вердиктов
+            all_sent = True
 
             # если есть обновления, то получить статус и отправить сообщение
             if homeworks:
                 for homework in homeworks:
                     message = parse_status(homework)
-                    send_message(vk, message)
+                    success = send_message(vk, message)
+                    if not success:
+                        all_sent = False
+                        logger.error(
+                            'Не удалось отправить вердикт по работе %s',
+                            homework.get(
+                                'homework_name',
+                                'неизвестная работа')
+                        )
             else:
                 logger.debug('Новых статусов в ответе API нет.')
+
+            if all_sent:
+                timestamp = response.get('current_date', timestamp)
 
         except Exception as error:
             # логируем сбой
@@ -165,9 +227,16 @@ def main():
                     'Не удалось отправить уведомление об ошибке: %s',
                     send_error
                 )
-        # подожать некоторое время и вернуться в начало цикла
-        time.sleep(RETRY_PERIOD)
+        finally:
+            # подожать некоторое время и вернуться в начало цикла
+            time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as error:
+        print(f'Произошла ошибка: {error}')
+        sys.exit(1)
+    else:
+        sys.exit(0)
