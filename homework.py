@@ -1,8 +1,8 @@
 # Стандартный python
-import os
 import http
-import random
 import logging
+import os
+import random
 import sys
 import time
 from logging.handlers import RotatingFileHandler
@@ -10,8 +10,11 @@ from logging.handlers import RotatingFileHandler
 # Сторонние, устанавливаемые
 import requests  # type: ignore
 import vk_api  # type: ignore
-from vk_api.exceptions import ApiError  # type: ignore
 from dotenv import load_dotenv  # type: ignore
+from vk_api.exceptions import ApiError  # type: ignore
+
+# Импорты проекта
+from exceptions import MissingTokensError, ApiAnswerError
 
 load_dotenv()
 
@@ -57,14 +60,6 @@ if not logger.handlers:
 
     logger.addHandler(stream_handler)
     logger.addHandler(file_handler)
-
-
-class MissingTokensError(Exception):
-    """Отсутствуют обязательные переменные окружения."""
-
-
-class ApiAnswerError(Exception):
-    """Исключение при некорректном ответе API."""
 
 
 def check_tokens():
@@ -203,12 +198,6 @@ def main():
                     success = send_message(vk, message)
                     if not success:
                         all_sent = False
-                        logger.error(
-                            'Не удалось отправить вердикт по работе %s',
-                            homework.get(
-                                'homework_name',
-                                'неизвестная работа')
-                        )
             else:
                 logger.debug('Новых статусов в ответе API нет.')
 
@@ -219,13 +208,7 @@ def main():
             # логируем сбой
             message = f'Сбой в работе программы: {error}'
             logger.error(message, exc_info=True)
-            try:
-                send_message(vk, message)
-            except Exception as send_error:
-                logger.exception(
-                    'Не удалось отправить уведомление об ошибке: %s',
-                    send_error
-                )
+            send_message(vk, message)
         finally:
             # подожать некоторое время и вернуться в начало цикла
             time.sleep(RETRY_PERIOD)
@@ -235,7 +218,6 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as error:
-        print(f'Произошла ошибка: {error}')
-        sys.exit(1)
+        sys.exit(f'Произошла ошибка: {error}')
     else:
         sys.exit(0)
