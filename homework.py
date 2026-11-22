@@ -57,7 +57,6 @@ if not logger.handlers:
 
     logger.addHandler(stream_handler)
     logger.addHandler(file_handler)
-    logger.propagate = False
 
 
 class MissingTokensError(Exception):
